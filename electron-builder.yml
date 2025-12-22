@@ -11,6 +11,13 @@ files:
   - package.json
   - package-lock.json
 
+asarUnpack:
+  - src/main/helper-script.sh
+
+extraFiles:
+  - from: src/main/helper-script.sh
+    to: helper-script.sh
+
 mac:
   category: public.app-category.utilities
   target:

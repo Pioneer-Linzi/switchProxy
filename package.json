@@ -31,10 +31,12 @@
       "category": "public.app-category.utilities",
       "target": "dmg"
     },
+    "asarUnpack": [
+      "src/main/helper-script.sh"
+    ],
     "files": [
       "src/**/*",
-      "assets/**/*",
-      "!src/**/*.sh"
+      "assets/**/*"
     ],
     "extraFiles": [
       {

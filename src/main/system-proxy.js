@@ -32,14 +32,30 @@ class SystemProxy {
         // 开发模式
         return devPath;
       } else if (app && process.resourcesPath) {
-        // 打包后的应用
-        const prodPath = path.join(process.resourcesPath, 'helper-script.sh');
-        if (fs.existsSync(prodPath)) {
-          return prodPath;
+        // 打包后的应用：尝试多个可能的位置
+        const possiblePaths = [
+          // 从 extraFiles 复制的位置（最优先）
+          path.join(process.resourcesPath, 'helper-script.sh'),
+          // 从 asarUnpack 解压的位置
+          path.join(process.resourcesPath, 'app.asar.unpacked', 'src', 'main', 'helper-script.sh'),
+          // 应用包内的资源目录
+          path.join(app.getAppPath(), 'helper-script.sh'),
+          // 备用位置
+          path.join(process.resourcesPath, 'app', 'src', 'main', 'helper-script.sh')
+        ];
+
+        for (const prodPath of possiblePaths) {
+          if (fs.existsSync(prodPath)) {
+            console.log('找到辅助脚本:', prodPath);
+            return prodPath;
+          }
         }
+
+        console.warn('未找到辅助脚本，尝试的位置:', possiblePaths);
+        console.warn('使用开发路径作为备用:', devPath);
       }
     } catch (error) {
-      // app 可能不可用，使用默认路径
+      console.warn('获取应用路径失败:', error);
     }
 
     return devPath;
