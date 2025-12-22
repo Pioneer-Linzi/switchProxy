@@ -18,6 +18,60 @@ class AuthHelper {
     constructor() {
         this.authRight = 'system.preferences.network';
         this.authFile = path.join(require('os').homedir(), '.switchproxy-auth');
+        this.sudoersFile = '/etc/sudoers.d/switchproxy';
+        this.lastAuthTime = 0;
+        this.authCacheDuration = Infinity; // 永久缓存（直到用户注销或重启）
+        this.helperInstalled = false;
+    }
+
+    /**
+     * 检查是否已配置 sudo 免密
+     */
+    async hasSudoNopasswd() {
+        try {
+            const { stdout } = await execAsync(`sudo -n networksetup -listallnetworkservices > /dev/null 2>&1 && echo "OK" || echo "FAIL"`);
+            return stdout.trim() === 'OK';
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * 配置 sudo 免密（需要管理员权限）
+     * 这是实现永久免密的关键方法
+     */
+    async configureSudoNopasswd() {
+        const username = require('os').userInfo().username;
+        const sudoersContent = `${username} ALL=(ALL) NOPASSWD: /usr/sbin/networksetup\n`;
+
+        // 使用 osascript 执行 sudo 命令来配置免密
+        const command = `echo "${sudoersContent}" | sudo tee ${this.sudoersFile} > /dev/null && sudo chmod 0440 ${this.sudoersFile}`;
+        const escapedCommand = command
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\$/g, '\\$')
+            .replace(/`/g, '\\`');
+
+        const appleScript = `do shell script "${escapedCommand}" with administrator privileges`;
+        const osascriptCommand = `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}'`;
+
+        return new Promise((resolve, reject) => {
+            console.log('配置 sudo 免密（需要输入一次密码）...');
+            exec(osascriptCommand, { timeout: 30000 }, (error, stdout, stderr) => {
+                if (error) {
+                    const errorMsg = error.message || stderr || '';
+                    if (errorMsg.includes('User canceled') || errorMsg.includes('canceled')) {
+                        reject(new Error('用户取消了授权'));
+                    } else {
+                        reject(new Error('配置 sudo 免密失败: ' + errorMsg));
+                    }
+                } else {
+                    console.log('Sudo 免密配置成功');
+                    this.markAuthAcquired();
+                    resolve(true);
+                }
+            });
+        });
     }
 
     /**
@@ -35,14 +89,32 @@ class AuthHelper {
 
     /**
      * 获取授权（首次使用时需要输入密码）
-     * 使用 osascript 获取授权，授权会被缓存
-     * 关键：使用相同的命令模式，确保授权被正确缓存
+     * 使用 osascript 获取授权，授权会被缓存到用户会话
      */
     async acquireAuth() {
+        // 如果最近刚获取过授权（30秒内），直接返回成功
+        if (this.isRecentlyAuthorized()) {
+            console.log('最近已获取授权（30秒内），跳过重复获取');
+            return true;
+        }
+
+        // 检查授权标记文件
+        // 如果标记文件存在，说明之前已经获取过授权
+        // macOS 的授权缓存应该仍然有效（在用户会话期间）
+        // 但如果授权缓存失效，仍然会提示输入密码
+        const hasMark = this.hasAuthMark();
+        if (hasMark) {
+            console.log('授权标记文件存在，尝试使用缓存的授权');
+            console.log('如果授权缓存有效，不会提示输入密码');
+            // 不立即返回，继续执行获取授权的流程
+            // 如果授权缓存有效，osascript 不会提示输入密码
+        } else {
+            console.log('授权标记文件不存在，需要首次获取授权');
+        }
+
         return new Promise((resolve, reject) => {
             // 使用 osascript 执行一个简单的需要管理员权限的命令
-            // 这会触发授权对话框，授权会被缓存
-            // 使用与 executeWithAuth 相同的模式，确保授权被正确缓存
+            // 这会触发授权对话框，授权会被缓存到用户会话
             const testCommand = 'networksetup -listallnetworkservices > /dev/null 2>&1';
             const escapedCommand = testCommand
                 .replace(/\\/g, '\\\\')
@@ -53,7 +125,7 @@ class AuthHelper {
             const appleScript = `do shell script "${escapedCommand}" with administrator privileges`;
             const osascriptCommand = `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}'`;
 
-            console.log('获取授权...');
+            console.log('获取授权（首次使用需要输入密码）...');
             exec(osascriptCommand, { timeout: 30000 }, (error, stdout, stderr) => {
                 if (error) {
                     const errorMsg = error.message || stderr || '';
@@ -64,7 +136,8 @@ class AuthHelper {
                     }
                 } else {
                     // 授权成功，标记已获取
-                    console.log('授权获取成功');
+                    console.log('授权获取成功，创建授权标记文件');
+                    this.lastAuthTime = Date.now();
                     this.markAuthAcquired();
                     resolve(true);
                 }
@@ -85,23 +158,61 @@ class AuthHelper {
 
     /**
      * 检查授权标记文件
+     * 如果文件存在，认为授权已永久获取（直到用户注销或重启）
      */
     hasAuthMark() {
         try {
-            return fs.existsSync(this.authFile);
+            const exists = fs.existsSync(this.authFile);
+            if (exists) {
+                // 读取文件内容，检查时间戳
+                const content = fs.readFileSync(this.authFile, 'utf8');
+                console.log('授权标记文件内容:', content);
+            }
+            return exists;
         } catch (error) {
+            console.error('检查授权标记文件失败:', error);
             return false;
         }
     }
 
     /**
+     * 检查授权是否刚刚获取（避免重复获取）
+     */
+    isRecentlyAuthorized() {
+        const now = Date.now();
+        const timeSinceLastAuth = now - this.lastAuthTime;
+        // 如果最近30秒内获取过授权，认为仍然有效
+        return timeSinceLastAuth < 30000;
+    }
+
+    /**
      * 执行需要管理员权限的命令
-     * 使用 osascript 的授权缓存机制
-     * 
-     * 注意：macOS 的授权缓存机制可能不够可靠，每次 exec 都会创建新的 osascript 进程
-     * 为了确保授权被缓存，我们需要确保在短时间内使用相同的授权上下文
+     * 优先使用 sudo 免密，如果未配置则使用 osascript
      */
     async executeWithAuth(command) {
+        // 首先检查是否已配置 sudo 免密
+        const hasSudo = await this.hasSudoNopasswd();
+
+        if (hasSudo) {
+            // 使用 sudo 免密执行（不需要密码）
+            console.log('使用 sudo 免密执行命令（不需要密码）');
+            return new Promise((resolve, reject) => {
+                exec(`sudo ${command}`, { timeout: 60000 }, (error, stdout, stderr) => {
+                    if (error) {
+                        const errorMsg = error.message || stderr || '';
+                        console.error('命令执行失败:', { error: errorMsg });
+                        reject(new Error(`执行失败: ${errorMsg}`));
+                    } else {
+                        console.log('命令执行成功（使用 sudo 免密）');
+                        resolve(stdout);
+                    }
+                });
+            });
+        }
+
+        // 如果未配置 sudo 免密，使用 osascript（需要授权缓存）
+        console.log('未配置 sudo 免密，使用 osascript（需要授权缓存）');
+
         // 转义命令中的特殊字符
         const escapedCommand = command
             .replace(/\\/g, '\\\\')
@@ -109,15 +220,12 @@ class AuthHelper {
             .replace(/\$/g, '\\$')
             .replace(/`/g, '\\`');
 
-        // 使用 osascript 执行命令
-        // macOS 的授权缓存基于以下因素：
-        // 1. 相同的用户
-        // 2. 相同的时间窗口（通常几分钟到几小时）
-        // 3. 相同的命令模式
         const appleScript = `do shell script "${escapedCommand}" with administrator privileges`;
         const osascriptCommand = `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}'`;
 
-        console.log('执行命令（使用授权缓存）:', command.substring(0, 100) + '...');
+        const hasMark = this.hasAuthMark();
+        console.log('执行命令（使用 osascript 授权）:', command.substring(0, 100) + '...');
+        console.log('授权标记文件存在:', hasMark, hasMark ? '(应该不需要密码)' : '(需要输入密码)');
 
         return new Promise((resolve, reject) => {
             exec(osascriptCommand, { timeout: 60000 }, (error, stdout, stderr) => {
@@ -128,21 +236,15 @@ class AuthHelper {
                     if (errorMsg.includes('User canceled') || errorMsg.includes('canceled')) {
                         reject(new Error('操作已取消'));
                     } else if (errorMsg.includes('password') || errorMsg.includes('authentication') || errorMsg.includes('not allowed')) {
-                        // 授权失败，清除标记，下次会重新获取
-                        console.warn('授权失败，清除授权标记');
-                        try {
-                            if (fs.existsSync(this.authFile)) {
-                                fs.unlinkSync(this.authFile);
-                            }
-                        } catch (e) {
-                            // 忽略错误
-                        }
+                        console.warn('授权失败，需要重新授权');
                         reject(new Error('需要管理员权限'));
                     } else {
                         reject(new Error(`执行失败: ${errorMsg}`));
                     }
                 } else {
                     console.log('命令执行成功');
+                    this.lastAuthTime = Date.now();
+                    this.markAuthAcquired();
                     resolve(stdout);
                 }
             });

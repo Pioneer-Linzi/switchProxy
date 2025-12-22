@@ -194,29 +194,53 @@ class SystemProxy {
     const shellCommand = commands.join(' && ');
 
     try {
-      // 检查是否已有授权，如果没有则先获取
-      if (!authHelper.hasAuthMark()) {
-        console.log('首次使用，获取授权...');
-        await authHelper.acquireAuth();
+      // 首先检查是否已配置 sudo 免密
+      const hasSudo = await authHelper.hasSudoNopasswd();
+      console.log('检查 sudo 免密配置:', hasSudo);
+
+      if (!hasSudo) {
+        // 如果未配置 sudo 免密，尝试配置（首次需要输入密码）
+        const hasAuth = authHelper.hasAuthMark();
+        if (!hasAuth) {
+          console.log('首次使用，配置 sudo 免密（需要输入一次密码）...');
+          try {
+            await authHelper.configureSudoNopasswd();
+            console.log('Sudo 免密配置成功，后续操作不需要密码');
+          } catch (configError) {
+            console.warn('配置 sudo 免密失败，使用 osascript 授权缓存:', configError.message);
+            // 如果配置失败，回退到 osascript 方式
+            await authHelper.acquireAuth();
+          }
+        } else {
+          console.log('授权标记存在，但未配置 sudo 免密，尝试配置...');
+          try {
+            await authHelper.configureSudoNopasswd();
+            console.log('Sudo 免密配置成功');
+          } catch (configError) {
+            console.warn('配置 sudo 免密失败，使用 osascript 授权缓存');
+          }
+        }
+      } else {
+        console.log('Sudo 免密已配置，直接执行（不需要密码）');
       }
 
-      // 使用授权助手执行命令
-      // osascript 的授权缓存通常持续到用户注销或重启系统
+      // 执行命令（如果已配置 sudo 免密，不会提示密码）
       const result = await authHelper.executeWithAuth(shellCommand);
       console.log('命令执行成功');
       return result;
     } catch (error) {
-      // 如果授权失败，尝试重新获取授权
+      // 如果授权失败，说明可能是首次使用或配置失败
       if (error.message.includes('需要管理员权限') || error.message.includes('authentication')) {
-        console.log('授权可能已过期，重新获取授权...');
+        console.log('授权失败，尝试重新获取授权...');
         try {
-          await authHelper.acquireAuth();
+          // 尝试配置 sudo 免密
+          await authHelper.configureSudoNopasswd();
           // 重试执行
           const result = await authHelper.executeWithAuth(shellCommand);
-          console.log('命令执行成功（重试后）');
+          console.log('命令执行成功（配置 sudo 免密后）');
           return result;
         } catch (retryError) {
-          throw new Error('需要管理员权限。请在系统提示时输入密码（授权将长期有效，直到注销或重启）。');
+          throw new Error('需要管理员权限。请在系统提示时输入密码（配置后将永久免密）。');
         }
       }
       throw error;
