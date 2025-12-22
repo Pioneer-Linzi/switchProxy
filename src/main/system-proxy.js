@@ -88,37 +88,33 @@ class SystemProxy {
     }
   }
 
-  // 执行 networksetup 命令（需要管理员权限）
+  // 执行 networksetup 命令（使用授权助手）
   async executeCommand(command, options = {}) {
-    return new Promise((resolve, reject) => {
-      const sudoOptions = {
-        name: 'SwitchProxy',
-        icns: options.icns || undefined
-      };
+    try {
+      // 检查是否已有授权，如果没有则先获取
+      if (!authHelper.hasAuthMark()) {
+        console.log('首次使用，获取授权...');
+        await authHelper.acquireAuth();
+      }
 
-      console.log('执行命令:', command);
-
-      sudo.exec(command, sudoOptions, (error, stdout, stderr) => {
-        if (error) {
-          console.error('命令执行失败:', { error, stdout, stderr });
-          // 检查是否是权限错误
-          const errorMsg = error.message || '';
-          if (errorMsg.includes('User did not grant permission') ||
-            errorMsg.includes('password') ||
-            errorMsg.includes('permission denied')) {
-            reject(new Error('需要管理员权限。请在系统提示时输入密码。'));
-          } else if (errorMsg.includes('canceled') || errorMsg.includes('cancel')) {
-            reject(new Error('操作已取消'));
-          } else {
-            const errMsg = stderr || errorMsg || '未知错误';
-            reject(new Error(`执行命令失败: ${errMsg}`));
-          }
-        } else {
-          console.log('命令执行成功:', stdout);
-          resolve(stdout);
+      // 使用授权助手执行命令
+      const result = await authHelper.executeWithAuth(command);
+      return result;
+    } catch (error) {
+      // 如果授权失败，尝试重新获取授权
+      if (error.message.includes('需要管理员权限') || error.message.includes('authentication')) {
+        console.log('授权可能已过期，重新获取授权...');
+        try {
+          await authHelper.acquireAuth();
+          // 重试执行
+          const result = await authHelper.executeWithAuth(command);
+          return result;
+        } catch (retryError) {
+          throw new Error('需要管理员权限。请在系统提示时输入密码（授权将长期有效，直到注销或重启）。');
         }
-      });
-    });
+      }
+      throw error;
+    }
   }
 
   // 使用辅助脚本执行命令（通过授权助手实现长期授权缓存）
@@ -170,33 +166,39 @@ class SystemProxy {
     }
   }
 
-  // 批量执行多个命令（已废弃，改用辅助脚本）
+  // 批量执行多个命令（使用授权助手）
   async executeCommands(commands, options = {}) {
-    // 这个方法保留用于向后兼容，但实际应该使用 executeWithHelper
     if (commands.length === 0) {
       return Promise.resolve('');
     }
 
     const commandString = commands.join(' && ');
-    const appleScript = `do shell script "${commandString.replace(/"/g, '\\"')}" with administrator privileges`;
-    const osascriptCommand = `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}'`;
 
-    return new Promise((resolve, reject) => {
-      exec(osascriptCommand, { timeout: 60000 }, (error, stdout, stderr) => {
-        if (error) {
-          const errorMsg = error.message || stderr || '';
-          if (errorMsg.includes('User canceled') || errorMsg.includes('canceled')) {
-            reject(new Error('操作已取消'));
-          } else if (errorMsg.includes('password') || errorMsg.includes('authentication')) {
-            reject(new Error('需要管理员权限。请在系统提示时输入密码。'));
-          } else {
-            reject(new Error(`执行命令失败: ${errorMsg}`));
-          }
-        } else {
-          resolve(stdout);
+    try {
+      // 检查是否已有授权，如果没有则先获取
+      if (!authHelper.hasAuthMark()) {
+        console.log('首次使用，获取授权...');
+        await authHelper.acquireAuth();
+      }
+
+      // 使用授权助手执行命令
+      const result = await authHelper.executeWithAuth(commandString);
+      return result;
+    } catch (error) {
+      // 如果授权失败，尝试重新获取授权
+      if (error.message.includes('需要管理员权限') || error.message.includes('authentication')) {
+        console.log('授权可能已过期，重新获取授权...');
+        try {
+          await authHelper.acquireAuth();
+          // 重试执行
+          const result = await authHelper.executeWithAuth(commandString);
+          return result;
+        } catch (retryError) {
+          throw new Error('需要管理员权限。请在系统提示时输入密码（授权将长期有效，直到注销或重启）。');
         }
-      });
-    });
+      }
+      throw error;
+    }
   }
 
   // 设置 HTTP 代理
