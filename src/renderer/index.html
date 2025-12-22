@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';">
+  <title>SwitchProxy</title>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+
+<body>
+  <div id="app">
+    <div class="header">
+      <h1>代理切换</h1>
+      <div class="status" id="status">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span id="statusText">未启用</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" id="toggleBtn">开启代理</button>
+      <button class="btn btn-secondary" id="addBtn">添加代理</button>
+    </div>
+
+    <div class="proxy-list" id="proxyList">
+      <!-- 代理列表将在这里动态生成 -->
+    </div>
+
+    <!-- 添加/编辑代理表单模态框 -->
+    <div class="modal" id="proxyModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modalTitle">添加代理</h2>
+          <button class="close-btn" id="closeModal">&times;</button>
+        </div>
+        <form id="proxyForm">
+          <input type="hidden" id="proxyId">
+          <div class="form-group">
+            <label for="proxyName">代理名称</label>
+            <input type="text" id="proxyName" required placeholder="例如：公司代理">
+          </div>
+          <div class="form-group">
+            <label for="proxyType">代理类型</label>
+            <select id="proxyType" required>
+              <option value="http">HTTP/HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="proxyHost">主机地址</label>
+            <input type="text" id="proxyHost" required placeholder="127.0.0.1">
+          </div>
+          <div class="form-group">
+            <label for="proxyPort">端口</label>
+            <input type="number" id="proxyPort" required placeholder="8080" min="1" max="65535">
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="cancelBtn">取消</button>
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

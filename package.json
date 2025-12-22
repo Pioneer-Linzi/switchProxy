@@ -1,0 +1,46 @@
+{
+  "name": "switch-proxy",
+  "version": "1.0.0",
+  "description": "macOS 代理快速切换应用",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac"
+  },
+  "keywords": [
+    "proxy",
+    "macos",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "sudo-prompt": "^9.2.1"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.switchproxy.app",
+    "productName": "SwitchProxy",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": "dmg"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "!src/**/*.sh"
+    ],
+    "extraFiles": [
+      {
+        "from": "src/main/helper-script.sh",
+        "to": "helper-script.sh"
+      }
+    ]
+  }
+}

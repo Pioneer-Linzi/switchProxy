@@ -1,0 +1,385 @@
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const path = require('path');
+const fs = require('fs');
+const sudo = require('sudo-prompt');
+const authHelper = require('./auth-helper');
+
+const execAsync = promisify(exec);
+
+class SystemProxy {
+  constructor() {
+    // 获取辅助脚本路径（支持开发和生产环境）
+    this.helperScriptPath = this.getHelperScriptPath();
+    // 确保脚本有执行权限
+    this.ensureScriptExecutable();
+  }
+
+  // 获取辅助脚本路径
+  getHelperScriptPath() {
+    // 在开发环境中，脚本在 src/main 目录
+    const devPath = path.join(__dirname, 'helper-script.sh');
+
+    // 优先使用开发路径
+    if (fs.existsSync(devPath)) {
+      return devPath;
+    }
+
+    // 生产环境：尝试从应用资源目录查找
+    try {
+      const { app } = require('electron');
+      if (app && !app.isPackaged) {
+        // 开发模式
+        return devPath;
+      } else if (app && process.resourcesPath) {
+        // 打包后的应用
+        const prodPath = path.join(process.resourcesPath, 'helper-script.sh');
+        if (fs.existsSync(prodPath)) {
+          return prodPath;
+        }
+      }
+    } catch (error) {
+      // app 可能不可用，使用默认路径
+    }
+
+    return devPath;
+  }
+
+  // 确保辅助脚本有执行权限
+  ensureScriptExecutable() {
+    try {
+      if (fs.existsSync(this.helperScriptPath)) {
+        fs.chmodSync(this.helperScriptPath, 0o755);
+      }
+    } catch (error) {
+      console.warn('无法设置脚本执行权限:', error);
+    }
+  }
+
+  // 获取所有网络服务
+  async getNetworkServices() {
+    try {
+      const { stdout } = await execAsync('networksetup -listallnetworkservices');
+      const services = stdout
+        .split('\n')
+        .slice(1) // 跳过第一行标题
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+      return services;
+    } catch (error) {
+      throw new Error(`获取网络服务失败: ${error.message}`);
+    }
+  }
+
+  // 获取当前活跃的网络服务（通常是第一个启用的）
+  async getActiveNetworkService() {
+    try {
+      const services = await this.getNetworkServices();
+      // 通常 Wi-Fi 或以太网是活跃的，优先选择 Wi-Fi
+      const wifiService = services.find(s => s.includes('Wi-Fi') || s.includes('WiFi'));
+      if (wifiService) {
+        return wifiService;
+      }
+      // 如果没有 Wi-Fi，返回第一个服务
+      return services[0] || 'Wi-Fi';
+    } catch (error) {
+      // 如果获取失败，默认使用 Wi-Fi
+      return 'Wi-Fi';
+    }
+  }
+
+  // 执行 networksetup 命令（需要管理员权限）
+  async executeCommand(command, options = {}) {
+    return new Promise((resolve, reject) => {
+      const sudoOptions = {
+        name: 'SwitchProxy',
+        icns: options.icns || undefined
+      };
+
+      console.log('执行命令:', command);
+
+      sudo.exec(command, sudoOptions, (error, stdout, stderr) => {
+        if (error) {
+          console.error('命令执行失败:', { error, stdout, stderr });
+          // 检查是否是权限错误
+          const errorMsg = error.message || '';
+          if (errorMsg.includes('User did not grant permission') ||
+            errorMsg.includes('password') ||
+            errorMsg.includes('permission denied')) {
+            reject(new Error('需要管理员权限。请在系统提示时输入密码。'));
+          } else if (errorMsg.includes('canceled') || errorMsg.includes('cancel')) {
+            reject(new Error('操作已取消'));
+          } else {
+            const errMsg = stderr || errorMsg || '未知错误';
+            reject(new Error(`执行命令失败: ${errMsg}`));
+          }
+        } else {
+          console.log('命令执行成功:', stdout);
+          resolve(stdout);
+        }
+      });
+    });
+  }
+
+  // 使用辅助脚本执行命令（通过授权助手实现长期授权缓存）
+  async executeWithHelper(action, service, type, host, port) {
+    // 转义参数中的特殊字符（用于 shell 命令）
+    const escapeShellArg = (arg) => {
+      if (!arg) return '';
+      return String(arg).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+    };
+
+    const escapedService = escapeShellArg(service);
+    const escapedType = escapeShellArg(type);
+    const escapedHost = escapeShellArg(host);
+    const escapedPort = escapeShellArg(port);
+
+    // 转义脚本路径（用于 shell）
+    const scriptPath = escapeShellArg(this.helperScriptPath);
+
+    // 构建 shell 命令（参数顺序：SERVICE TYPE HOST PORT ACTION）
+    const shellCommand = `${scriptPath} "${escapedService}" "${escapedType}" "${escapedHost}" "${escapedPort}" "${action}"`;
+
+    try {
+      // 检查是否已有授权，如果没有则先获取
+      if (!authHelper.hasAuthMark()) {
+        console.log('首次使用，获取授权...');
+        await authHelper.acquireAuth();
+      }
+
+      // 使用授权助手执行命令
+      // osascript 的授权缓存通常持续到用户注销或重启系统
+      const result = await authHelper.executeWithAuth(shellCommand);
+      console.log('命令执行成功');
+      return result;
+    } catch (error) {
+      // 如果授权失败，尝试重新获取授权
+      if (error.message.includes('需要管理员权限') || error.message.includes('authentication')) {
+        console.log('授权可能已过期，重新获取授权...');
+        try {
+          await authHelper.acquireAuth();
+          // 重试执行
+          const result = await authHelper.executeWithAuth(shellCommand);
+          console.log('命令执行成功（重试后）');
+          return result;
+        } catch (retryError) {
+          throw new Error('需要管理员权限。请在系统提示时输入密码（授权将长期有效，直到注销或重启）。');
+        }
+      }
+      throw error;
+    }
+  }
+
+  // 批量执行多个命令（已废弃，改用辅助脚本）
+  async executeCommands(commands, options = {}) {
+    // 这个方法保留用于向后兼容，但实际应该使用 executeWithHelper
+    if (commands.length === 0) {
+      return Promise.resolve('');
+    }
+
+    const commandString = commands.join(' && ');
+    const appleScript = `do shell script "${commandString.replace(/"/g, '\\"')}" with administrator privileges`;
+    const osascriptCommand = `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}'`;
+
+    return new Promise((resolve, reject) => {
+      exec(osascriptCommand, { timeout: 60000 }, (error, stdout, stderr) => {
+        if (error) {
+          const errorMsg = error.message || stderr || '';
+          if (errorMsg.includes('User canceled') || errorMsg.includes('canceled')) {
+            reject(new Error('操作已取消'));
+          } else if (errorMsg.includes('password') || errorMsg.includes('authentication')) {
+            reject(new Error('需要管理员权限。请在系统提示时输入密码。'));
+          } else {
+            reject(new Error(`执行命令失败: ${errorMsg}`));
+          }
+        } else {
+          resolve(stdout);
+        }
+      });
+    });
+  }
+
+  // 设置 HTTP 代理
+  async setHttpProxy(host, port, networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const commands = [
+      `networksetup -setwebproxy "${service}" ${host} ${port}`,
+      `networksetup -setsecurewebproxy "${service}" ${host} ${port}`
+    ];
+
+    try {
+      // 批量执行，只触发一次密码提示
+      await this.executeCommands(commands);
+      return true;
+    } catch (error) {
+      throw new Error(`设置 HTTP 代理失败: ${error.message}`);
+    }
+  }
+
+  // 设置 SOCKS5 代理
+  async setSocksProxy(host, port, networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const command = `networksetup -setsocksfirewallproxy "${service}" ${host} ${port}`;
+
+    try {
+      await this.executeCommand(command);
+      return true;
+    } catch (error) {
+      throw new Error(`设置 SOCKS5 代理失败: ${error.message}`);
+    }
+  }
+
+  // 开启 HTTP 代理
+  async enableHttpProxy(networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const commands = [
+      `networksetup -setwebproxystate "${service}" on`,
+      `networksetup -setsecurewebproxystate "${service}" on`
+    ];
+
+    try {
+      // 批量执行，只触发一次密码提示
+      await this.executeCommands(commands);
+      return true;
+    } catch (error) {
+      throw new Error(`开启 HTTP 代理失败: ${error.message}`);
+    }
+  }
+
+  // 开启 SOCKS5 代理
+  async enableSocksProxy(networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const command = `networksetup -setsocksfirewallproxystate "${service}" on`;
+
+    try {
+      await this.executeCommand(command);
+      return true;
+    } catch (error) {
+      throw new Error(`开启 SOCKS5 代理失败: ${error.message}`);
+    }
+  }
+
+  // 关闭 HTTP 代理
+  async disableHttpProxy(networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const commands = [
+      `networksetup -setwebproxystate "${service}" off`,
+      `networksetup -setsecurewebproxystate "${service}" off`
+    ];
+
+    try {
+      // 批量执行，只触发一次密码提示
+      await this.executeCommands(commands);
+      return true;
+    } catch (error) {
+      throw new Error(`关闭 HTTP 代理失败: ${error.message}`);
+    }
+  }
+
+  // 关闭 SOCKS5 代理
+  async disableSocksProxy(networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+    const command = `networksetup -setsocksfirewallproxystate "${service}" off`;
+
+    try {
+      await this.executeCommand(command);
+      return true;
+    } catch (error) {
+      throw new Error(`关闭 SOCKS5 代理失败: ${error.message}`);
+    }
+  }
+
+  // 关闭所有代理
+  async disableAllProxies(networkService) {
+    const service = networkService || await this.getActiveNetworkService();
+
+    try {
+      // 使用辅助脚本一次性关闭所有代理，只触发一次密码提示
+      await this.executeWithHelper('disable-all', service, '', '', '');
+      return true;
+    } catch (error) {
+      throw new Error(`关闭代理失败: ${error.message}`);
+    }
+  }
+
+  // 设置代理（根据类型）
+  async setProxy(proxy, networkService) {
+    const { type, host, port } = proxy;
+
+    try {
+      if (type === 'http') {
+        await this.setHttpProxy(host, port, networkService);
+      } else if (type === 'socks5') {
+        await this.setSocksProxy(host, port, networkService);
+      } else {
+        throw new Error(`不支持的代理类型: ${type}`);
+      }
+      return true;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // 开启代理（根据类型）
+  async enableProxy(proxy, networkService) {
+    const { type } = proxy;
+
+    try {
+      if (type === 'http') {
+        await this.enableHttpProxy(networkService);
+      } else if (type === 'socks5') {
+        await this.enableSocksProxy(networkService);
+      } else {
+        throw new Error(`不支持的代理类型: ${type}`);
+      }
+      return true;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // 设置并启用代理（一次性操作，只触发一次密码提示，使用长期授权缓存）
+  async setAndEnableProxy(proxy, networkService) {
+    const { type, host, port } = proxy;
+    const service = networkService || await this.getActiveNetworkService();
+
+    try {
+      let action;
+      if (type === 'http') {
+        action = 'set-and-enable-http';
+      } else if (type === 'socks5') {
+        action = 'set-and-enable-socks';
+      } else {
+        throw new Error(`不支持的代理类型: ${type}`);
+      }
+
+      // 使用辅助脚本一次性执行所有命令，只触发一次密码提示
+      // osascript 的授权缓存通常持续到用户注销或重启系统
+      await this.executeWithHelper(action, service, type, host, port);
+      return true;
+    } catch (error) {
+      throw new Error(`设置并启用代理失败: ${error.message}`);
+    }
+  }
+
+  // 关闭代理（根据类型）
+  async disableProxy(proxy, networkService) {
+    const { type } = proxy;
+
+    try {
+      if (type === 'http') {
+        await this.disableHttpProxy(networkService);
+      } else if (type === 'socks5') {
+        await this.disableSocksProxy(networkService);
+      } else {
+        throw new Error(`不支持的代理类型: ${type}`);
+      }
+      return true;
+    } catch (error) {
+      throw error;
+    }
+  }
+}
+
+module.exports = new SystemProxy();
+
