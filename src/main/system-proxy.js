@@ -11,6 +11,8 @@ class SystemProxy {
   constructor() {
     // 获取辅助脚本路径（支持开发和生产环境）
     this.helperScriptPath = this.getHelperScriptPath();
+    console.log('辅助脚本路径:', this.helperScriptPath);
+    console.log('脚本是否存在:', fs.existsSync(this.helperScriptPath));
     // 确保脚本有执行权限
     this.ensureScriptExecutable();
   }
@@ -22,6 +24,7 @@ class SystemProxy {
 
     // 优先使用开发路径
     if (fs.existsSync(devPath)) {
+      console.log('使用开发路径:', devPath);
       return devPath;
     }
 
@@ -30,19 +33,30 @@ class SystemProxy {
       const { app } = require('electron');
       if (app && !app.isPackaged) {
         // 开发模式
+        console.log('开发模式，使用开发路径:', devPath);
         return devPath;
-      } else if (app && process.resourcesPath) {
+      } else if (app) {
         // 打包后的应用：尝试多个可能的位置
+        const resourcesPath = process.resourcesPath || path.join(app.getAppPath(), '..', '..', 'Resources');
+        const appPath = app.getAppPath();
+
+        console.log('生产模式 - resourcesPath:', resourcesPath);
+        console.log('生产模式 - appPath:', appPath);
+
         const possiblePaths = [
           // 从 extraFiles 复制的位置（最优先）
-          path.join(process.resourcesPath, 'helper-script.sh'),
+          path.join(resourcesPath, 'helper-script.sh'),
           // 从 asarUnpack 解压的位置
-          path.join(process.resourcesPath, 'app.asar.unpacked', 'src', 'main', 'helper-script.sh'),
+          path.join(resourcesPath, 'app.asar.unpacked', 'src', 'main', 'helper-script.sh'),
           // 应用包内的资源目录
-          path.join(app.getAppPath(), 'helper-script.sh'),
+          path.join(appPath, 'helper-script.sh'),
           // 备用位置
-          path.join(process.resourcesPath, 'app', 'src', 'main', 'helper-script.sh')
+          path.join(resourcesPath, 'app', 'src', 'main', 'helper-script.sh'),
+          // 直接使用 __dirname（如果已解压）
+          path.join(__dirname.replace('app.asar', 'app.asar.unpacked'), 'helper-script.sh')
         ];
+
+        console.log('尝试查找脚本路径:', possiblePaths);
 
         for (const prodPath of possiblePaths) {
           if (fs.existsSync(prodPath)) {
@@ -146,11 +160,38 @@ class SystemProxy {
     const escapedHost = escapeShellArg(host);
     const escapedPort = escapeShellArg(port);
 
-    // 转义脚本路径（用于 shell）
-    const scriptPath = escapeShellArg(this.helperScriptPath);
+    // 构建命令：直接内联执行，不依赖外部脚本文件
+    // 这样可以避免 asar 打包问题
+    let commands = [];
 
-    // 构建 shell 命令（参数顺序：SERVICE TYPE HOST PORT ACTION）
-    const shellCommand = `${scriptPath} "${escapedService}" "${escapedType}" "${escapedHost}" "${escapedPort}" "${action}"`;
+    switch (action) {
+      case 'set-and-enable-http':
+        commands = [
+          `networksetup -setwebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+          `networksetup -setsecurewebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+          `networksetup -setwebproxystate "${escapedService}" on`,
+          `networksetup -setsecurewebproxystate "${escapedService}" on`
+        ];
+        break;
+      case 'set-and-enable-socks':
+        commands = [
+          `networksetup -setsocksfirewallproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+          `networksetup -setsocksfirewallproxystate "${escapedService}" on`
+        ];
+        break;
+      case 'disable-all':
+        commands = [
+          `networksetup -setwebproxystate "${escapedService}" off`,
+          `networksetup -setsecurewebproxystate "${escapedService}" off`,
+          `networksetup -setsocksfirewallproxystate "${escapedService}" off`
+        ];
+        break;
+      default:
+        throw new Error(`未知的操作: ${action}`);
+    }
+
+    // 将所有命令合并为一个命令，用 && 连接
+    const shellCommand = commands.join(' && ');
 
     try {
       // 检查是否已有授权，如果没有则先获取
