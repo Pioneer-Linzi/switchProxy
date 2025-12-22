@@ -52,12 +52,24 @@ npm run dev
 
 ### 构建应用
 
+#### 本地构建
+
 ```bash
 # 构建 macOS 应用
 npm run build:mac
 ```
 
 构建完成后，应用将打包为 `.dmg` 文件，位于 `dist` 目录。
+
+#### 使用 GitHub Actions 自动构建
+
+项目已配置 GitHub Actions 自动构建：
+
+- **自动构建**: 推送到 `main`/`master` 分支或创建 Pull Request 时自动构建
+- **手动触发**: 在 GitHub Actions 页面可以手动触发构建
+- **自动发布**: 创建以 `v` 开头的 tag（如 `v1.0.0`）时，会自动创建 Release 并上传构建产物
+
+构建产物会作为 Artifacts 上传，可以在 Actions 页面下载。
 
 ## 使用说明
 
