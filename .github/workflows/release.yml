@@ -29,8 +29,9 @@ jobs:
       - name: Build macOS app (arm64 and x64)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false # 禁用代码签名（如果需要签名，需要配置证书）
+          GH_TOKEN: "" # 禁用 GitHub 发布，避免需要 token
         run: |
-          yarn build:mac
+          yarn build:mac -- --publish never
       
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
