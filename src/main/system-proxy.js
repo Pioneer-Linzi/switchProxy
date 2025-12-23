@@ -400,7 +400,7 @@ class SystemProxy {
     try {
       // 为所有服务构建命令
       const allCommands = [];
-      
+
       for (const service of services) {
         allCommands.push(
           `networksetup -setwebproxystate "${service}" off`,
@@ -458,7 +458,7 @@ class SystemProxy {
   // networkServices: 可以是单个服务名（字符串）或服务名数组，如果为空则使用所有服务
   async setAndEnableProxy(proxy, networkServices = null) {
     const { type, host, port } = proxy;
-    
+
     // 确定要使用的网络服务列表
     let services = [];
     if (networkServices === null || networkServices === undefined) {
@@ -478,7 +478,7 @@ class SystemProxy {
     try {
       // 为所有服务构建命令
       const allCommands = [];
-      
+
       for (const service of services) {
         if (type === 'http') {
           allCommands.push(
@@ -530,7 +530,7 @@ class SystemProxy {
     try {
       // 为所有服务构建命令
       const allCommands = [];
-      
+
       for (const service of services) {
         if (type === 'http') {
           allCommands.push(

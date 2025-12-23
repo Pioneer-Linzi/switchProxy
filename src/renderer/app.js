@@ -31,8 +31,11 @@ const elements = {
 // 初始化
 async function init() {
   await loadProxies();
+  // 先加载网络接口列表，再加载选中的网络接口，最后渲染
   await loadNetworkServices();
   await loadSelectedNetworkServices();
+  // 加载完选中的网络接口后，重新渲染以确保显示正确的选中状态
+  renderNetworkServices();
   setupEventListeners();
   setupStateListener();
 }
@@ -79,6 +82,9 @@ function setupEventListeners() {
   if (elements.refreshServicesBtn) {
     elements.refreshServicesBtn.addEventListener('click', async () => {
       await loadNetworkServices();
+      // 刷新后重新加载选中的网络接口并渲染
+      await loadSelectedNetworkServices();
+      renderNetworkServices();
     });
   }
 }
@@ -414,7 +420,7 @@ async function loadNetworkServices() {
     const result = await window.electronAPI.getNetworkServices();
     if (result.success) {
       state.networkServices = result.services || [];
-      renderNetworkServices();
+      // 不在这里渲染，等待选中的网络接口加载完成后再渲染
     } else {
       console.error('加载网络接口失败:', result.error);
       showError('加载网络接口失败: ' + (result.error || '未知错误'));
@@ -431,11 +437,16 @@ async function loadSelectedNetworkServices() {
     const result = await window.electronAPI.getSelectedNetworkServices();
     if (result.success) {
       state.selectedNetworkServices = result.services || [];
+      console.log('加载选中的网络接口:', state.selectedNetworkServices);
     } else {
       console.error('加载选中的网络接口失败:', result.error);
+      // 如果加载失败，使用空数组（表示使用所有接口）
+      state.selectedNetworkServices = [];
     }
   } catch (error) {
     console.error('加载选中的网络接口异常:', error);
+    // 如果加载异常，使用空数组（表示使用所有接口）
+    state.selectedNetworkServices = [];
   }
 }
 
