@@ -5,7 +5,8 @@ const store = new Store({
   defaults: {
     proxies: [],
     currentProxy: null,
-    proxyEnabled: false
+    proxyEnabled: false,
+    selectedNetworkServices: [] // 选中的网络接口列表，空数组表示使用所有接口
   }
 });
 
@@ -95,6 +96,17 @@ class ProxyStorage {
   // 生成唯一 ID
   generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  }
+
+  // 获取选中的网络接口
+  getSelectedNetworkServices() {
+    return store.get('selectedNetworkServices', []);
+  }
+
+  // 设置选中的网络接口（空数组表示使用所有接口）
+  setSelectedNetworkServices(services) {
+    store.set('selectedNetworkServices', services || []);
+    return services || [];
   }
 }
 

@@ -21,7 +21,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 移除监听器
   removeProxyStateListener: () => {
     ipcRenderer.removeAllListeners('proxy-state-changed');
-  }
+  },
+
+  // 网络接口管理
+  getNetworkServices: () => ipcRenderer.invoke('get-network-services'),
+  setSelectedNetworkServices: (services) => ipcRenderer.invoke('set-selected-network-services', services),
+  getSelectedNetworkServices: () => ipcRenderer.invoke('get-selected-network-services')
 });
 
 

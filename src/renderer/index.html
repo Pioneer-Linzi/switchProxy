@@ -25,6 +25,19 @@
       <button class="btn btn-secondary" id="addBtn">添加代理</button>
     </div>
 
+    <div class="network-services-section">
+      <div class="section-header">
+        <h3>网络接口选择</h3>
+        <button class="btn btn-link" id="refreshServicesBtn" title="刷新网络接口列表">刷新</button>
+      </div>
+      <div class="network-services-info">
+        <p class="info-text">选择要应用代理的网络接口（不选择则应用到所有接口）</p>
+      </div>
+      <div class="network-services-list" id="networkServicesList">
+        <!-- 网络接口列表将在这里动态生成 -->
+      </div>
+    </div>
+
     <div class="proxy-list" id="proxyList">
       <!-- 代理列表将在这里动态生成 -->
     </div>

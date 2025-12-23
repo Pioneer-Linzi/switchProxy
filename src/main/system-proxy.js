@@ -148,7 +148,7 @@ class SystemProxy {
   }
 
   // 使用辅助脚本执行命令（通过授权助手实现长期授权缓存）
-  async executeWithHelper(action, service, type, host, port) {
+  async executeWithHelper(action, service, type, host, port, customCommand = null) {
     // 转义参数中的特殊字符（用于 shell 命令）
     const escapeShellArg = (arg) => {
       if (!arg) return '';
@@ -163,35 +163,41 @@ class SystemProxy {
     // 构建命令：直接内联执行，不依赖外部脚本文件
     // 这样可以避免 asar 打包问题
     let commands = [];
+    let shellCommand;
 
-    switch (action) {
-      case 'set-and-enable-http':
-        commands = [
-          `networksetup -setwebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
-          `networksetup -setsecurewebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
-          `networksetup -setwebproxystate "${escapedService}" on`,
-          `networksetup -setsecurewebproxystate "${escapedService}" on`
-        ];
-        break;
-      case 'set-and-enable-socks':
-        commands = [
-          `networksetup -setsocksfirewallproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
-          `networksetup -setsocksfirewallproxystate "${escapedService}" on`
-        ];
-        break;
-      case 'disable-all':
-        commands = [
-          `networksetup -setwebproxystate "${escapedService}" off`,
-          `networksetup -setsecurewebproxystate "${escapedService}" off`,
-          `networksetup -setsocksfirewallproxystate "${escapedService}" off`
-        ];
-        break;
-      default:
-        throw new Error(`未知的操作: ${action}`);
+    // 如果提供了自定义命令，直接使用
+    if (action === 'custom' && customCommand) {
+      shellCommand = customCommand;
+    } else {
+      switch (action) {
+        case 'set-and-enable-http':
+          commands = [
+            `networksetup -setwebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+            `networksetup -setsecurewebproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+            `networksetup -setwebproxystate "${escapedService}" on`,
+            `networksetup -setsecurewebproxystate "${escapedService}" on`
+          ];
+          break;
+        case 'set-and-enable-socks':
+          commands = [
+            `networksetup -setsocksfirewallproxy "${escapedService}" ${escapedHost} ${escapedPort}`,
+            `networksetup -setsocksfirewallproxystate "${escapedService}" on`
+          ];
+          break;
+        case 'disable-all':
+          commands = [
+            `networksetup -setwebproxystate "${escapedService}" off`,
+            `networksetup -setsecurewebproxystate "${escapedService}" off`,
+            `networksetup -setsocksfirewallproxystate "${escapedService}" off`
+          ];
+          break;
+        default:
+          throw new Error(`未知的操作: ${action}`);
+      }
+
+      // 将所有命令合并为一个命令，用 && 连接
+      shellCommand = commands.join(' && ');
     }
-
-    // 将所有命令合并为一个命令，用 && 连接
-    const shellCommand = commands.join(' && ');
 
     try {
       // 首先检查是否已配置 sudo 免密
@@ -373,12 +379,39 @@ class SystemProxy {
   }
 
   // 关闭所有代理
-  async disableAllProxies(networkService) {
-    const service = networkService || await this.getActiveNetworkService();
+  // networkServices: 可以是单个服务名（字符串）或服务名数组，如果为空则使用所有服务
+  async disableAllProxies(networkServices = null) {
+    // 确定要使用的网络服务列表
+    let services = [];
+    if (networkServices === null || networkServices === undefined) {
+      // 如果没有指定，使用所有网络服务
+      services = await this.getNetworkServices();
+    } else if (Array.isArray(networkServices)) {
+      services = networkServices;
+    } else {
+      // 单个服务名
+      services = [networkServices];
+    }
+
+    if (services.length === 0) {
+      throw new Error('没有可用的网络服务');
+    }
 
     try {
-      // 使用辅助脚本一次性关闭所有代理，只触发一次密码提示
-      await this.executeWithHelper('disable-all', service, '', '', '');
+      // 为所有服务构建命令
+      const allCommands = [];
+      
+      for (const service of services) {
+        allCommands.push(
+          `networksetup -setwebproxystate "${service}" off`,
+          `networksetup -setsecurewebproxystate "${service}" off`,
+          `networksetup -setsocksfirewallproxystate "${service}" off`
+        );
+      }
+
+      // 一次性执行所有命令
+      const commandString = allCommands.join(' && ');
+      await this.executeWithHelper('custom', '', '', '', '', commandString);
       return true;
     } catch (error) {
       throw new Error(`关闭代理失败: ${error.message}`);
@@ -422,23 +455,51 @@ class SystemProxy {
   }
 
   // 设置并启用代理（一次性操作，只触发一次密码提示，使用长期授权缓存）
-  async setAndEnableProxy(proxy, networkService) {
+  // networkServices: 可以是单个服务名（字符串）或服务名数组，如果为空则使用所有服务
+  async setAndEnableProxy(proxy, networkServices = null) {
     const { type, host, port } = proxy;
-    const service = networkService || await this.getActiveNetworkService();
+    
+    // 确定要使用的网络服务列表
+    let services = [];
+    if (networkServices === null || networkServices === undefined) {
+      // 如果没有指定，使用所有网络服务
+      services = await this.getNetworkServices();
+    } else if (Array.isArray(networkServices)) {
+      services = networkServices;
+    } else {
+      // 单个服务名
+      services = [networkServices];
+    }
+
+    if (services.length === 0) {
+      throw new Error('没有可用的网络服务');
+    }
 
     try {
-      let action;
-      if (type === 'http') {
-        action = 'set-and-enable-http';
-      } else if (type === 'socks5') {
-        action = 'set-and-enable-socks';
-      } else {
-        throw new Error(`不支持的代理类型: ${type}`);
+      // 为所有服务构建命令
+      const allCommands = [];
+      
+      for (const service of services) {
+        if (type === 'http') {
+          allCommands.push(
+            `networksetup -setwebproxy "${service}" ${host} ${port}`,
+            `networksetup -setsecurewebproxy "${service}" ${host} ${port}`,
+            `networksetup -setwebproxystate "${service}" on`,
+            `networksetup -setsecurewebproxystate "${service}" on`
+          );
+        } else if (type === 'socks5') {
+          allCommands.push(
+            `networksetup -setsocksfirewallproxy "${service}" ${host} ${port}`,
+            `networksetup -setsocksfirewallproxystate "${service}" on`
+          );
+        } else {
+          throw new Error(`不支持的代理类型: ${type}`);
+        }
       }
 
-      // 使用辅助脚本一次性执行所有命令，只触发一次密码提示
-      // osascript 的授权缓存通常持续到用户注销或重启系统
-      await this.executeWithHelper(action, service, type, host, port);
+      // 一次性执行所有命令，只触发一次密码提示
+      const commandString = allCommands.join(' && ');
+      await this.executeWithHelper('custom', '', type, host, port, commandString);
       return true;
     } catch (error) {
       throw new Error(`设置并启用代理失败: ${error.message}`);
@@ -446,17 +507,48 @@ class SystemProxy {
   }
 
   // 关闭代理（根据类型）
-  async disableProxy(proxy, networkService) {
+  // networkServices: 可以是单个服务名（字符串）或服务名数组，如果为空则使用所有服务
+  async disableProxy(proxy, networkServices = null) {
     const { type } = proxy;
 
+    // 确定要使用的网络服务列表
+    let services = [];
+    if (networkServices === null || networkServices === undefined) {
+      // 如果没有指定，使用所有网络服务
+      services = await this.getNetworkServices();
+    } else if (Array.isArray(networkServices)) {
+      services = networkServices;
+    } else {
+      // 单个服务名
+      services = [networkServices];
+    }
+
+    if (services.length === 0) {
+      throw new Error('没有可用的网络服务');
+    }
+
     try {
-      if (type === 'http') {
-        await this.disableHttpProxy(networkService);
-      } else if (type === 'socks5') {
-        await this.disableSocksProxy(networkService);
-      } else {
-        throw new Error(`不支持的代理类型: ${type}`);
+      // 为所有服务构建命令
+      const allCommands = [];
+      
+      for (const service of services) {
+        if (type === 'http') {
+          allCommands.push(
+            `networksetup -setwebproxystate "${service}" off`,
+            `networksetup -setsecurewebproxystate "${service}" off`
+          );
+        } else if (type === 'socks5') {
+          allCommands.push(
+            `networksetup -setsocksfirewallproxystate "${service}" off`
+          );
+        } else {
+          throw new Error(`不支持的代理类型: ${type}`);
+        }
       }
+
+      // 一次性执行所有命令
+      const commandString = allCommands.join(' && ');
+      await this.executeWithHelper('custom', '', type, '', '', commandString);
       return true;
     } catch (error) {
       throw error;

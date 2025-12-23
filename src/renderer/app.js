@@ -2,7 +2,9 @@
 let state = {
   proxies: [],
   currentProxy: null,
-  proxyEnabled: false
+  proxyEnabled: false,
+  networkServices: [],
+  selectedNetworkServices: []
 };
 
 // DOM 元素
@@ -21,12 +23,16 @@ const elements = {
   proxyName: document.getElementById('proxyName'),
   proxyType: document.getElementById('proxyType'),
   proxyHost: document.getElementById('proxyHost'),
-  proxyPort: document.getElementById('proxyPort')
+  proxyPort: document.getElementById('proxyPort'),
+  networkServicesList: document.getElementById('networkServicesList'),
+  refreshServicesBtn: document.getElementById('refreshServicesBtn')
 };
 
 // 初始化
 async function init() {
   await loadProxies();
+  await loadNetworkServices();
+  await loadSelectedNetworkServices();
   setupEventListeners();
   setupStateListener();
 }
@@ -68,6 +74,13 @@ function setupEventListeners() {
 
   // 表单提交
   elements.proxyForm.addEventListener('submit', handleSubmitProxy);
+
+  // 刷新网络接口列表
+  if (elements.refreshServicesBtn) {
+    elements.refreshServicesBtn.addEventListener('click', async () => {
+      await loadNetworkServices();
+    });
+  }
 }
 
 // 设置状态监听器
@@ -84,6 +97,7 @@ function updateUI() {
   updateStatus();
   updateToggleButton();
   renderProxyList();
+  renderNetworkServices();
 }
 
 // 更新状态显示
@@ -392,6 +406,149 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// 加载网络接口列表
+async function loadNetworkServices() {
+  try {
+    const result = await window.electronAPI.getNetworkServices();
+    if (result.success) {
+      state.networkServices = result.services || [];
+      renderNetworkServices();
+    } else {
+      console.error('加载网络接口失败:', result.error);
+      showError('加载网络接口失败: ' + (result.error || '未知错误'));
+    }
+  } catch (error) {
+    console.error('加载网络接口异常:', error);
+    showError('加载网络接口失败: ' + error.message);
+  }
+}
+
+// 加载选中的网络接口
+async function loadSelectedNetworkServices() {
+  try {
+    const result = await window.electronAPI.getSelectedNetworkServices();
+    if (result.success) {
+      state.selectedNetworkServices = result.services || [];
+    } else {
+      console.error('加载选中的网络接口失败:', result.error);
+    }
+  } catch (error) {
+    console.error('加载选中的网络接口异常:', error);
+  }
+}
+
+// 渲染网络接口列表
+function renderNetworkServices() {
+  if (!elements.networkServicesList) {
+    return;
+  }
+
+  if (state.networkServices.length === 0) {
+    elements.networkServicesList.innerHTML = `
+      <div class="empty-state">
+        <p>没有检测到网络接口</p>
+        <p>点击"刷新"按钮重新加载</p>
+      </div>
+    `;
+    return;
+  }
+
+  const allSelected = state.selectedNetworkServices.length === 0;
+  const selectedSet = new Set(state.selectedNetworkServices);
+
+  elements.networkServicesList.innerHTML = `
+    <div class="network-service-item">
+      <label class="network-service-checkbox">
+        <input type="checkbox" id="selectAllServices" ${allSelected ? 'checked' : ''}>
+        <span>应用到所有接口</span>
+      </label>
+    </div>
+    ${state.networkServices.map(service => {
+      const isSelected = allSelected || selectedSet.has(service);
+      return `
+        <div class="network-service-item">
+          <label class="network-service-checkbox">
+            <input type="checkbox" data-service="${escapeHtml(service)}" ${isSelected ? 'checked' : ''} ${allSelected ? 'disabled' : ''}>
+            <span>${escapeHtml(service)}</span>
+          </label>
+        </div>
+      `;
+    }).join('')}
+  `;
+
+  // 绑定事件
+  const selectAllCheckbox = document.getElementById('selectAllServices');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', async (e) => {
+      if (e.target.checked) {
+        // 选择所有 = 清空选中列表（表示使用所有接口）
+        await saveSelectedNetworkServices([]);
+      } else {
+        // 取消选择所有 = 选择所有接口
+        await saveSelectedNetworkServices(state.networkServices);
+      }
+    });
+  }
+
+  // 绑定单个接口的复选框事件
+  elements.networkServicesList.querySelectorAll('input[type="checkbox"][data-service]').forEach(checkbox => {
+    checkbox.addEventListener('change', async (e) => {
+      const service = e.target.getAttribute('data-service');
+      let newSelected = [...state.selectedNetworkServices];
+
+      if (e.target.checked) {
+        // 添加到选中列表
+        if (!newSelected.includes(service)) {
+          newSelected.push(service);
+        }
+      } else {
+        // 从选中列表移除
+        newSelected = newSelected.filter(s => s !== service);
+      }
+
+      // 如果选中了所有接口，则清空列表（表示使用所有接口）
+      if (newSelected.length === state.networkServices.length) {
+        newSelected = [];
+      }
+
+      await saveSelectedNetworkServices(newSelected);
+    });
+  });
+}
+
+// 保存选中的网络接口
+async function saveSelectedNetworkServices(services) {
+  try {
+    const result = await window.electronAPI.setSelectedNetworkServices(services);
+    if (result.success) {
+      state.selectedNetworkServices = services || [];
+      renderNetworkServices();
+      
+      // 如果代理已开启，自动重新应用代理设置
+      if (state.proxyEnabled && state.currentProxy) {
+        console.log('代理已开启，重新应用代理设置到新的网络接口...');
+        try {
+          // 先关闭代理
+          await window.electronAPI.toggleProxy(false);
+          // 再重新开启代理（会使用新的网络接口配置）
+          await window.electronAPI.toggleProxy(true);
+          showSuccess('网络接口选择已更新，代理设置已重新应用');
+        } catch (error) {
+          console.error('重新应用代理设置失败:', error);
+          showError('网络接口选择已保存，但重新应用代理设置失败: ' + error.message);
+        }
+      } else {
+        showSuccess('网络接口选择已保存');
+      }
+    } else {
+      showError('保存网络接口选择失败: ' + (result.error || '未知错误'));
+    }
+  } catch (error) {
+    console.error('保存网络接口选择异常:', error);
+    showError('保存网络接口选择失败: ' + error.message);
+  }
 }
 
 // 页面加载完成后初始化

@@ -134,6 +134,37 @@ class ProxyManager {
         currentProxyId
       };
     });
+
+    // 获取所有网络接口
+    ipcMain.handle('get-network-services', async () => {
+      try {
+        const services = await systemProxy.getNetworkServices();
+        return { success: true, services };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    // 设置选中的网络接口
+    ipcMain.handle('set-selected-network-services', async (event, services) => {
+      try {
+        proxyStorage.setSelectedNetworkServices(services);
+        this.broadcastState();
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    // 获取选中的网络接口
+    ipcMain.handle('get-selected-network-services', async () => {
+      try {
+        const services = proxyStorage.getSelectedNetworkServices();
+        return { success: true, services };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
   }
 
   // 应用代理设置到系统
@@ -164,12 +195,17 @@ class ProxyManager {
       throw new Error('代理配置不存在');
     }
 
+    // 获取选中的网络接口（空数组表示使用所有接口）
+    const selectedServices = proxyStorage.getSelectedNetworkServices();
+    const networkServices = selectedServices.length > 0 ? selectedServices : null;
+
     console.log('启用代理:', proxy);
+    console.log('使用的网络接口:', networkServices || '所有接口');
 
     try {
       // 使用一次性方法设置并启用代理，只触发一次密码提示
       console.log('设置并启用代理（一次性操作）...');
-      await systemProxy.setAndEnableProxy(proxy);
+      await systemProxy.setAndEnableProxy(proxy, networkServices);
 
       this.currentProxy = proxy;
       this.proxyEnabled = true;
@@ -186,9 +222,14 @@ class ProxyManager {
   // 禁用代理
   async disableProxy() {
     const currentProxyId = proxyStorage.getCurrentProxy();
+    
+    // 获取选中的网络接口（空数组表示使用所有接口）
+    const selectedServices = proxyStorage.getSelectedNetworkServices();
+    const networkServices = selectedServices.length > 0 ? selectedServices : null;
+
     if (!currentProxyId) {
       // 如果没有当前代理，直接关闭所有代理
-      await systemProxy.disableAllProxies();
+      await systemProxy.disableAllProxies(networkServices);
       this.proxyEnabled = false;
       proxyStorage.setProxyEnabled(false);
       return true;
@@ -196,14 +237,14 @@ class ProxyManager {
 
     const proxy = proxyStorage.getProxyById(currentProxyId);
     if (!proxy) {
-      await systemProxy.disableAllProxies();
+      await systemProxy.disableAllProxies(networkServices);
       this.proxyEnabled = false;
       proxyStorage.setProxyEnabled(false);
       return true;
     }
 
     try {
-      await systemProxy.disableProxy(proxy);
+      await systemProxy.disableProxy(proxy, networkServices);
 
       this.proxyEnabled = false;
       proxyStorage.setProxyEnabled(false);
